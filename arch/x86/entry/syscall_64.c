@@ -7,6 +7,7 @@
 #include <linux/syscalls.h>
 #include <linux/entry-common.h>
 #include <linux/nospec.h>
+#include <linux/kutrace.h>
 #include <asm/syscall.h>
 
 #define __SYSCALL(nr, sym) extern long __x64_##sym(const struct pt_regs *);
@@ -60,8 +61,35 @@ static __always_inline bool do_syscall_x64(struct pt_regs *regs, int nr)
 
 	if (likely(unr < NR_syscalls)) {
 		unr = array_index_nospec(unr, NR_syscalls);
+
+		/* dsites 2023.02.18 track all syscalls and normal returns */
+		/* Pass in low 16 bits of call arg0 and return value */
+		kutrace1(KUTRACE_SYSCALL64 | kutrace_map_nr(unr), regs->di & 0xFFFFul);
+
 		regs->ax = x64_sys_call(regs, unr);
+
+		/* dsites 2023.02.18 track all syscalls and normal returns */
+		/* Pass in low 16 bits of return value */
+		kutrace1(KUTRACE_SYSRET64 | kutrace_map_nr(unr), regs->ax & 0xFFFFul);
+
 		return true;
+
+#ifdef CONFIG_KUTRACE
+	/* dsites 2023.02.18 hook for controlling kutrace */
+	} else if ((nr == __NR_kutrace_control) &&
+	           (kutrace_global_ops.kutrace_trace_control != NULL)) {
+		BUILD_BUG_ON_MSG(NR_syscalls > __NR_kutrace_control,
+				"__NR_kutrace_control is too small");
+		BUILD_BUG_ON_MSG(16 > TASK_COMM_LEN,
+				"TASK_COMM_LEN is less than 16");
+		/* Calling kutrace_control(u64 command, u64 arg) */
+		/* see arch/x86/calling.h: */
+		/*  syscall arg0 in rdi (command), arg1 in rsi (arg) */
+		regs->ax = (*kutrace_global_ops.kutrace_trace_control)(
+			regs->di, regs->si);
+		return true;
+#endif
+
 	}
 	return false;
 }
